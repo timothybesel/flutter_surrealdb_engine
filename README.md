@@ -52,13 +52,6 @@ flowchart TD
     Core <-->|WebSocket| Remote
 ```
 
-### How it Works
-
-1.  **Dart Layer**: You interact with a clean, idiomatic Dart API (`SurrealDb`).
-2.  **FFI Bridge**: Calls are significantly faster than MethodChannels because they compile directly to native machine code.
-3.  **Rust Middleware**: We've implemented a smart middleware (via `queryTyped`) that intercepts your Dart objects (like `RecordId`) and converts them into native SurrealDB types before they even hit the database engine.
-4.  **Engine**: The query is executed by the actual embedded SurrealDB library (the exactly same one running on servers).
-
 ---
 
 ## 🚀 Getting Started
@@ -91,147 +84,245 @@ void main() async {
 
 ---
 
-## 💡 Usage Examples
+## � API Reference
 
-### Connecting
+### 🔌 Connection
 
-Choose your storage strategy based on your use case.
+#### `connect`
+Establish a connection to the database. Supports Memory, File (Embedded), and Remote (WebSocket/HTTP) modes.
 
 ```dart
 // 1. In-Memory (Great for testing/cache)
-final db = await SurrealDb.connect(
-  mode: const StorageMode.memory(),
-);
+final db = await SurrealDb.connect(mode: const StorageMode.memory());
 
 // 2. Persistent Local Storage (Offline-first apps)
-final db = await SurrealDb.connect(
-  mode: const StorageMode.disk(path: 'docs/my_app.db'),
-);
+final db = await SurrealDb.connect(mode: const StorageMode.disk(path: 'docs/my_app.db'));
 
 // 3. Remote Server (Traditional backend)
-final db = await SurrealDb.connect(
-  mode: const StorageMode.remote(url: 'ws://localhost:8000/rpc'),
-);
+final db = await SurrealDb.connect(mode: const StorageMode.remote(url: 'ws://localhost:8000/rpc'));
 ```
 
-### Authentication
-
-Support for both root (admin) access and scoped user authentication.
+#### `useDb`
+Switch to a specific namespace and database.
 
 ```dart
-// Admin Access
-await db.signin(
-  creds: jsonEncode({"user": "root", "pass": "root"}),
-);
-
-// User Authentication (Scope)
-final token = await db.signin(
-  creds: jsonEncode({
-    "NS": "my_ns",
-    "DB": "my_db",
-    "SC": "user_scope",
-    "user": "john_doe",
-    "pass": "123456",
-  }),
-);
+await db.useDb(ns: 'test', db: 'test');
 ```
 
-### CRUD Operations
-
-Standard operations are simple and async.
+#### `close`
+Close the database connection and release resources.
 
 ```dart
-// CREATE
+await db.close();
+```
+
+---
+
+### 🔐 Authentication
+
+#### `signin`
+Sign in with credentials. Supports both root auth and scoped users.
+
+```dart
+// Root/Admin Signin
+await db.signin(creds: jsonEncode({
+  "user": "root",
+  "pass": "root"
+}));
+
+// Scoped User Signin
+final jwt = await db.signin(creds: jsonEncode({
+  "NS": "test",
+  "DB": "test",
+  "SC": "user_scope",
+  "user": "john_doe",
+  "pass": "123456"
+}));
+```
+
+#### `signup`
+Register a new user within a scope.
+
+```dart
+final jwt = await db.signup(creds: jsonEncode({
+  "NS": "test",
+  "DB": "test",
+  "SC": "user_scope",
+  "user": "jane_doe",
+  "pass": "secureparams"
+}));
+```
+
+#### `authenticate`
+Authenticate using a previously obtained JWT token.
+
+```dart
+await db.authenticate(token: jwtToken);
+```
+
+#### `invalidate`
+Invalidate the current session/authentication.
+
+```dart
+await db.invalidate();
+```
+
+---
+
+### 💾 CRUD Operations
+
+#### `create`
+Create a new record.
+
+```dart
+// Create a specific record
 final user = await db.create(
   resource: 'user', 
   data: jsonEncode({'name': 'John', 'role': 'admin'}),
 );
+```
 
-// SELECT
+#### `select`
+Select all records from a table or a specific record.
+
+```dart
+// Select all users
 final users = await db.select(resource: 'user');
 
-// UPDATE
+// Select a specific user
+final user = await db.select(resource: 'user:john');
+```
+
+#### `update`
+Update a record (replaces the entire content).
+
+```dart
+await db.update(
+  resource: 'user:john', 
+  data: jsonEncode({'name': 'John Doe', 'role': 'user'}),
+);
+```
+
+#### `merge`
+Merge data into an existing record (partial update).
+
+```dart
 await db.merge(
   resource: 'user:john', 
   data: jsonEncode({'active': true}),
 );
+```
 
-// DELETE
+#### `delete`
+Delete a record or an entire table.
+
+```dart
 await db.delete(resource: 'user:john');
 ```
 
 ---
 
-## 🧠 Advanced: Typed Queries & Strict Schemas
+### 🔍 SQL Queries
 
-If your database uses `SCHEMAFULL` with strictly typed `record<table_name>` fields, generic JSON strings won't pass validation. 
-
-Use **`queryTyped`** and the **`RecordId`** helper class to solve this.
-
-### The Problem
-Sending `author: "user:123"` in a JSON string gets interpreted as a simple String, causing a schema mismatch error.
-
-### The Solution
+#### `query`
+Execute raw SQL queries with optional variable binding.
 
 ```dart
-import 'package:flutter_surrealdb_engine/flutter_surrealdb_engine.dart';
+final result = await db.query(
+  sql: "SELECT * FROM user WHERE age > \$min_age", 
+  vars: jsonEncode({'min_age': 18}),
+);
+```
 
-// 1. Create a strongly typed RecordId
+#### `queryTyped` (Strict Schema Support)
+Execute queries while preserving strict types (e.g., `record<table_name>`) that JSON normally destroys.
+
+```dart
 final authorId = RecordId.fromString("user:123");
 
-// 2. Use queryTyped
 await db.queryTyped(
   sql: "CREATE post CONTENT $data",
   vars: jsonEncode({
     "data": {
-      "title": "My Deep Dive",
-      // This is automatically converted to a native Record Link!
-      "author": authorId 
+      "title": "My Article",
+      "author": authorId // Automatically handled as a Record Link
     }
   }),
 );
 ```
 
-**Sequence Diagram:**
-
-```mermaid
-sequenceDiagram
-    participant Dart
-    participant Middleware
-    participant SurrealDB
-    
-    Dart->>Middleware: queryTyped(vars: { author: {"table":"user", "key":"123"} })
-    Note over Middleware: Detects RecordId Structure
-    Middleware->>Middleware: Converts JSON -> types::RecordId
-    Middleware->>SurrealDB: Execute Query with Native Types
-    SurrealDB-->>Dart: Success (Record Link Verified)
-```
-
 ---
 
-## 📡 Live Queries (Realtime)
+### 📡 Live Queries (Realtime)
 
-Subscribe to changes in real-time. This works for both local and remote databases!
+#### `liveQuery`
+Subscribe to real-time changes on a table.
 
 ```dart
+// Subscribe to the 'notification' table
 final stream = db.liveQuery(
   tableName: 'notification',
-  snapshot: true, // Get existing data first?
+  snapshot: true, // If true, returns all existing records first
 );
 
 stream.listen((event) {
   switch (event.action) {
     case Action.CREATE:
-      print("New notification: ${event.result}");
+      print("Created: ${event.result}");
       break;
     case Action.UPDATE:
-      print("Updated notification: ${event.result}");
+      print("Updated: ${event.result}");
       break;
     case Action.DELETE:
-      print("Deleted notification: ${event.result}");
+      print("Deleted: ${event.result}");
       break;
   }
 });
+```
+
+#### `killQuery`
+Manually kill a live query if needed (usually handled automatically by cancelling the stream subscription).
+
+```dart
+await SurrealDb.killQuery(queryUuid: 'uuid-from-event');
+```
+
+---
+
+### 📦 Transactions
+
+#### Manual Transaction Control
+For fine-grained control over transactions.
+
+```dart
+await db.queryBegin();
+try {
+  await db.create(resource: 'user', data: ...);
+  await db.create(resource: 'log', data: ...);
+  await db.queryCommit();
+} catch (e) {
+  await db.queryCancel();
+}
+```
+
+#### `transaction` Helper
+Execute a set of statements within a transaction macro.
+
+```dart
+await db.transaction(
+  stmts: "CREATE user:1; CREATE account:1;",
+);
+```
+
+---
+
+### 🛠 Utilities
+
+#### `export_`
+Export the database to a file (for backups).
+
+```dart
+await db.export_(path: '/path/to/backup.surql');
 ```
 
 ---
